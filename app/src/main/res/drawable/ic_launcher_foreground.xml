@@ -1,0 +1,32 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Stopwatch Body -->
+    <path
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="4"
+        android:strokeLineCap="round"
+        android:pathData="M54,54 m-26,0 a26,26 0 1,1 52,0 a26,26 0 1,1 -52,0" />
+    <!-- Top Button -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M48,18h12v8h-12z" />
+    <!-- Side Button -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M73.7,31.4l4.2,4.2l-2.8,2.8l-4.2,-4.2z" />
+    <!-- Number 1 -->
+    <path
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="4"
+        android:strokeLineCap="round"
+        android:pathData="M44,44v20" />
+    <!-- Number 0 -->
+    <path
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="4"
+        android:strokeLineCap="round"
+        android:pathData="M58,54 m0,-10 a6,10 0 1,1 0,20 a6,10 0 1,1 0,-20" />
+</vector>

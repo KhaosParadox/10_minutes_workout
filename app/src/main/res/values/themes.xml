@@ -1,0 +1,4 @@
+<resources>
+
+    <style name="Theme._10MinutesWorkout" parent="Theme.MaterialComponents.Light" />
+</resources>
