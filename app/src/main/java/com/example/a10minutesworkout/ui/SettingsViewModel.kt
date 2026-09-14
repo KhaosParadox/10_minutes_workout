@@ -49,21 +49,6 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         initialValue = SettingsUiState()
     )
 
-    init {
-        viewModelScope.launch {
-            if (trackDao.getTrackCount() == 0) {
-                val packageName = getApplication<Application>().packageName
-                trackDao.insertTrack(
-                    Track(
-                        title = "Musique par défaut",
-                        uriString = "android.resource://$packageName/${R.raw.background_music}",
-                        orderIndex = 0
-                    )
-                )
-            }
-        }
-    }
-
     fun updateEffortDuration(duration: Int) = viewModelScope.launch {
         settingsManager.saveEffortDuration(duration)
     }

@@ -7,7 +7,7 @@ import kotlinx.serialization.Serializable
 object Home : NavKey
 
 @Serializable
-object Workout : NavKey
+data class Workout(val gentle: Boolean = false) : NavKey
 
 @Serializable
 object Calendar : NavKey

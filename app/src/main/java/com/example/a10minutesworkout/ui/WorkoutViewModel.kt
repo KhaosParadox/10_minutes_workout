@@ -1,304 +1,167 @@
 package com.example.a10minutesworkout.ui
 
 import android.app.Application
-import android.media.AudioAttributes
-import android.media.MediaPlayer
+import android.os.SystemClock
 import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.viewModelScope
-import com.example.a10minutesworkout.data.ExerciseData
-import com.example.a10minutesworkout.data.WorkoutDatabase
-import com.example.a10minutesworkout.data.WorkoutSession
-import com.example.a10minutesworkout.model.Exercise
-import com.example.a10minutesworkout.util.MusicManager
-import com.example.a10minutesworkout.util.SettingsManager
-import com.example.a10minutesworkout.util.SoundManager
-import com.example.a10minutesworkout.util.TTSManager
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.flow.update
-import kotlinx.coroutines.launch
+import com.example.a10minutesworkout.data.*
+import com.example.a10minutesworkout.model.*
+import com.example.a10minutesworkout.util.*
+import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.*
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 import java.time.LocalDate
-import java.time.format.DateTimeFormatter
-
-enum class WorkoutPhase {
-    PREPARATION, EFFORT, REST, COMPLETED
-}
+import java.util.UUID
 
 data class WorkoutUiState(
-    val phase: WorkoutPhase = WorkoutPhase.PREPARATION,
-    val currentExerciseIndex: Int = 0,
-    val timeLeftMillis: Long = 10000L,
-    val isPaused: Boolean = false,
-    val isMusicMuted: Boolean = false,
-    val isCompleted: Boolean = false,
-    val totalExercises: Int = 0,
-    val exercises: List<Exercise> = emptyList(),
-    val effortDuration: Int = 30,
-    val restDuration: Int = 10
-) {
-    val currentExercise: Exercise? = if (currentExerciseIndex < exercises.size) {
-        exercises[currentExerciseIndex]
-    } else null
-}
+    val plan: TrainingPlan? = null,
+    val progress: SessionProgress = SessionProgress(),
+    val remainingTotalMillis: Long = 0,
+    val completed: Boolean = false,
+    val muted: Boolean = false,
+    val saving: Boolean = false,
+    val saved: Boolean = false,
+    val error: String? = null,
+    val audioError: String? = null
+)
 
-class WorkoutViewModel(application: Application) : AndroidViewModel(application) {
-
+class WorkoutViewModel(application: Application, private val savedState: SavedStateHandle) : AndroidViewModel(application) {
     private val _uiState = MutableStateFlow(WorkoutUiState())
-    val uiState: StateFlow<WorkoutUiState> = _uiState.asStateFlow()
-
-    private var timerJob: Job? = null
-    
-    private val ttsManager = TTSManager(application)
-    private val soundManager = SoundManager(application)
-    private val musicManager = MusicManager(application)
-    private val settingsManager = SettingsManager(application)
+    val uiState = _uiState.asStateFlow()
+    private val dao = WorkoutDatabase.getDatabase(application).workoutDao()
     private val trackDao = WorkoutDatabase.getDatabase(application).trackDao()
-    private val workoutDao = WorkoutDatabase.getDatabase(application).workoutDao()
+    private val settings = SettingsManager(application)
+    private val tts = TTSManager(application)
+    private val bell = SoundManager(application)
+    private val music = MusicManager(application) { message -> _uiState.update { it.copy(audioError = message) } }
+    private var engine: SessionEngine? = null
+    private var started = false
+    private var foreground = true
+    private var lastTick = 0L
+    private var ticker: Job? = null
+    private val sessionKey = savedState.get<String>("sessionKey") ?: UUID.randomUUID().toString().also { savedState["sessionKey"] = it }
 
-    init {
+    fun start(gentle: Boolean) {
+        if (started) return
+        started = true
         viewModelScope.launch {
-            // 1. Fetch settings and tracks
-            val effort = settingsManager.effortDuration.first()
-            val rest = settingsManager.restDuration.first()
-            val rounds = settingsManager.numberOfRounds.first()
-            val musicEnabled = settingsManager.isMusicEnabledByDefault.first()
-            val shuffle = settingsManager.isShuffleEnabled.first()
-            val tracks = trackDao.getAllTracks().first()
-
-            // 2. Build workout list
-            val baseList = ExerciseData.workoutExercises
-            val fullList = mutableListOf<Exercise>()
-            repeat(rounds) { fullList.addAll(baseList) }
-            
-            // 3. Update UI state
-            _uiState.update { it.copy(
-                exercises = fullList,
-                totalExercises = fullList.size,
-                effortDuration = effort,
-                restDuration = rest,
-                isMusicMuted = !musicEnabled
-            ) }
-
-            // 4. Configure and Launch music
-            musicManager.setPlaylist(tracks, shuffle)
-            musicManager.setMute(!musicEnabled)
-            if (musicEnabled) {
-                musicManager.play()
-            }
-            
-            // 5. Start timer and TTS
-            startTimer()
-            ttsManager.setOnReadyListener {
-                announceNextExercise(WorkoutPhase.PREPARATION, 0)
-            }
-        }
-    }
-
-    private fun startTimer() {
-        timerJob?.cancel()
-        timerJob = viewModelScope.launch {
-            while (true) {
-                val currentState = _uiState.value
-                if (currentState.phase == WorkoutPhase.COMPLETED) break
-
-                if (!currentState.isPaused) {
-                    delay(100L)
-                    val oldTime = _uiState.value.timeLeftMillis
-                    val newTime = oldTime - 100L
-                    
-                    handleTimeEvents(oldTime, newTime)
-
-                    if (newTime <= 0) {
-                        var phaseToAnnounce: WorkoutPhase? = null
-                        var indexToAnnounce = 0
-                        var isCompletedNow = false
-
-                        _uiState.update { state ->
-                            val nextState = moveToNextState(state)
-                            if (nextState.phase == WorkoutPhase.COMPLETED) {
-                                isCompletedNow = true
-                            } else {
-                                phaseToAnnounce = nextState.phase
-                                indexToAnnounce = nextState.currentExerciseIndex
-                            }
-                            nextState
-                        }
-
-                        if (isCompletedNow) {
-                            handleWorkoutCompletion()
-                            break 
-                        } else if (phaseToAnnounce != null) {
-                            viewModelScope.launch {
-                                delay(1200)
-                                announceNextExercise(phaseToAnnounce!!, indexToAnnounce)
-                            }
-                        }
-                    } else {
-                        _uiState.update { it.copy(timeLeftMillis = newTime) }
-                    }
-                } else {
-                    delay(100L)
+            try {
+                val restoredPlan = savedState.get<String>("plan")?.let { Json.decodeFromString<TrainingPlan>(it) }
+                val plan = restoredPlan ?: PersonalProgram.recommended(dao.getAllSessions().first(), gentle = gentle)
+                val progress = savedState.get<String>("progress")?.let { Json.decodeFromString<SessionProgress>(it).copy(paused = true) }
+                lastTick = SystemClock.elapsedRealtime()
+                engine = SessionEngine(plan, progress)
+                if (!foreground) engine?.pause(true)
+                val enabled = settings.isMusicEnabledByDefault.first()
+                music.setPlaylist(trackDao.getAllTracks().first(), settings.isShuffleEnabled.first())
+                music.setMute(!enabled)
+                _uiState.update { it.copy(plan = plan, muted = !enabled, saved = savedState.get<Boolean>("saved") == true) }
+                savedState["plan"] = Json.encodeToString(plan)
+                publish()
+                if (enabled && engine?.state?.paused == false && engine?.finished == false) music.play()
+                tts.setOnReadyListener { if (engine?.state?.paused == false && engine?.finished == false) announce() }
+                lastTick = SystemClock.elapsedRealtime()
+                ticker = viewModelScope.launch {
+                    while (isActive) { delay(100); tick() }
                 }
-            }
+            } catch (e: CancellationException) { throw e }
+            catch (e: Exception) { _uiState.update { it.copy(error = "Impossible de préparer la séance. Reviens à l’accueil puis réessaie.") } }
         }
     }
 
-    private fun handleTimeEvents(oldTime: Long, newTime: Long) {
-        val oldSec = (oldTime / 1000).toInt()
-        val newSec = (newTime / 1000).toInt()
-
-        if (oldTime > 300L && newTime <= 300L) {
-            soundManager.playBell()
+    private fun tick() {
+        val now = SystemClock.elapsedRealtime()
+        val delta = (now - lastTick).coerceAtLeast(0)
+        lastTick = now
+        val current = engine ?: return
+        if (current.finished || current.state.paused) return
+        val previous = current.state
+        val previousStep = current.step
+        current.advance(delta)
+        if (current.finished) {
+            music.stop(); tts.stop(); bell.playBell()
+        } else if (current.state.index != previous.index) {
+            bell.playBell(); announce()
+        } else {
+            val before = (previous.remainingMillis + 999) / 1000
+            val after = (current.state.remainingMillis + 999) / 1000
+            if (before != after && after in 1..3) tts.speak(after.toString(), flush = true)
+            val half = (previousStep?.seconds ?: 0) * 500L
+            if (previousStep?.kind == StepKind.WORK && previous.remainingMillis > half && current.state.remainingMillis <= half) tts.speak("Mi-temps", flush = true)
         }
-
-        if (oldSec != newSec && newSec >= 0) {
-            if (oldSec == 4 && newSec == 3) ttsManager.speak("3", flush = true)
-            if (oldSec == 3 && newSec == 2) ttsManager.speak("2", flush = true)
-            if (oldSec == 2 && newSec == 1) ttsManager.speak("1", flush = true)
-            
-            if (_uiState.value.phase == WorkoutPhase.EFFORT && newSec == 15 && oldSec == 16) {
-                ttsManager.speak("Mi-temps", flush = true)
-            }
-        }
+        publish()
     }
 
-    private fun announceNextExercise(phase: WorkoutPhase, index: Int) {
-        val nextEx = if (phase == WorkoutPhase.PREPARATION) {
-            _uiState.value.exercises.getOrNull(index)
-        } else if (phase == WorkoutPhase.REST) {
-            _uiState.value.exercises.getOrNull(index + 1)
-        } else null
-
-        if (nextEx != null) {
-            ttsManager.speak("Prochain exercice : ${nextEx.name}")
-        }
+    private fun announce() {
+        engine?.step?.let { tts.speak(if (it.kind == StepKind.REST) it.cue else it.name, flush = true) }
     }
 
-    private fun moveToNextState(currentState: WorkoutUiState): WorkoutUiState {
-        return when (currentState.phase) {
-            WorkoutPhase.PREPARATION -> {
-                currentState.copy(
-                    phase = WorkoutPhase.EFFORT,
-                    timeLeftMillis = currentState.effortDuration * 1000L
-                )
-            }
-            WorkoutPhase.EFFORT -> {
-                val isLastExercise = currentState.currentExerciseIndex == currentState.totalExercises - 1
-                if (isLastExercise) {
-                    currentState.copy(
-                        phase = WorkoutPhase.COMPLETED,
-                        timeLeftMillis = 0
-                    )
-                } else {
-                    currentState.copy(
-                        phase = WorkoutPhase.REST,
-                        timeLeftMillis = currentState.restDuration * 1000L
-                    )
-                }
-            }
-            WorkoutPhase.REST -> {
-                val nextIndex = currentState.currentExerciseIndex + 1
-                currentState.copy(
-                    phase = WorkoutPhase.EFFORT,
-                    currentExerciseIndex = nextIndex,
-                    timeLeftMillis = currentState.effortDuration * 1000L
-                )
-            }
-            WorkoutPhase.COMPLETED -> currentState
-        }
+    private fun publish() {
+        val current = engine ?: return
+        _uiState.update { it.copy(progress = current.state, remainingTotalMillis = current.remainingTotalMillis, completed = current.finished) }
+        savedState["progress"] = Json.encodeToString(current.state)
     }
 
-    private fun handleWorkoutCompletion() {
-        musicManager.stop()
-        _uiState.update { it.copy(isCompleted = true) }
-        viewModelScope.launch {
-            delay(1000)
-            ttsManager.speak("Entraînement terminé, félicitations !", flush = true)
-            val session = WorkoutSession(
-                timestamp = System.currentTimeMillis(),
-                dateString = LocalDate.now().format(DateTimeFormatter.ISO_LOCAL_DATE),
-                workoutName = "10 Minutes Workout",
-                durationInSeconds = _uiState.value.exercises.size * _uiState.value.effortDuration
-            )
-            workoutDao.insertSession(session)
-        }
+    fun pause() {
+        tick(); engine?.pause(true)
+        music.pause(); tts.stop(); publish()
     }
 
     fun togglePause() {
-        var isNowPaused = false
-        _uiState.update { 
-            isNowPaused = !it.isPaused
-            it.copy(isPaused = isNowPaused)
+        val current = engine ?: return
+        if (current.finished) return
+        if (!current.state.paused) pause() else {
+            lastTick = SystemClock.elapsedRealtime(); current.pause(false)
+            if (!_uiState.value.muted) music.play()
+            announce(); publish()
         }
-        if (isNowPaused) musicManager.pause() else musicManager.play()
+    }
+
+    fun onForeground(value: Boolean) { foreground = value; if (!value) pause() }
+
+    fun skip() {
+        tick()
+        val current = engine ?: return
+        if (current.finished) return
+        current.skip()
+        if (current.finished) { music.stop(); tts.stop(); bell.playBell() }
+        else if (!current.state.paused) announce()
+        publish()
     }
 
     fun toggleMusicMute() {
-        var isNowMuted = false
-        _uiState.update { 
-            isNowMuted = !it.isMusicMuted
-            it.copy(isMusicMuted = isNowMuted)
+        val muted = !_uiState.value.muted
+        music.setMute(muted); _uiState.update { it.copy(muted = muted) }
+        if (!muted && engine?.state?.paused == false && engine?.finished == false) music.play()
+    }
+
+    fun save(feedback: String, onSaved: () -> Unit) {
+        if (_uiState.value.saving) return
+        if (_uiState.value.saved) { onSaved(); return }
+        pause()
+        val current = engine ?: run { onSaved(); return }
+        if (current.state.elapsedMillis == 0L) { onSaved(); return }
+        _uiState.update { it.copy(saving = true, error = null) }
+        viewModelScope.launch {
+            try {
+                val complete = current.finished && current.state.skippedWork == 0
+                dao.insertSession(WorkoutSession(
+                    timestamp = System.currentTimeMillis(), dateString = LocalDate.now().toString(),
+                    workoutName = current.plan.title, durationInSeconds = (current.state.elapsedMillis / 1000).toInt(),
+                    programId = current.plan.id, level = current.plan.level,
+                    activeSeconds = (current.state.activeMillis / 1000).toInt(), completed = complete,
+                    feedback = feedback, advancesCycle = complete && current.plan.advancesCycle, sessionKey = sessionKey
+                ))
+                savedState["saved"] = true
+                _uiState.update { it.copy(saving = false, saved = true) }; onSaved()
+            } catch (e: CancellationException) { throw e }
+            catch (e: Exception) { _uiState.update { it.copy(saving = false, error = "Enregistrement impossible. Réessaie : ta séance reste ici.") } }
         }
-        musicManager.setMute(isNowMuted)
-    }
-
-    fun dismissCompletionDialog(onDismissed: () -> Unit) {
-        stopAllAudio()
-        _uiState.update { it.copy(isCompleted = false) }
-        onDismissed()
-    }
-
-    private fun stopAllAudio() {
-        musicManager.stop()
-        ttsManager.shutdown()
-        soundManager.release()
-    }
-
-    fun skipForward() {
-        soundManager.playBell()
-        var phaseToAnnounce: WorkoutPhase? = null
-        var indexToAnnounce = 0
-        _uiState.update { state ->
-            val nextState = moveToNextState(state)
-            phaseToAnnounce = nextState.phase
-            indexToAnnounce = nextState.currentExerciseIndex
-            nextState
-        }
-        phaseToAnnounce?.let { announceNextExercise(it, indexToAnnounce) }
-    }
-
-    fun skipBackward() {
-        var phaseToAnnounce: WorkoutPhase? = null
-        var indexToAnnounce = 0
-        _uiState.update { state ->
-            val newState = if (state.currentExerciseIndex > 0) {
-                state.copy(
-                    phase = WorkoutPhase.EFFORT,
-                    currentExerciseIndex = state.currentExerciseIndex - 1,
-                    timeLeftMillis = state.effortDuration * 1000L
-                )
-            } else if (state.phase != WorkoutPhase.PREPARATION) {
-                state.copy(
-                    phase = WorkoutPhase.PREPARATION,
-                    timeLeftMillis = 10000L
-                )
-            } else {
-                state
-            }
-            phaseToAnnounce = newState.phase
-            indexToAnnounce = newState.currentExerciseIndex
-            newState
-        }
-        phaseToAnnounce?.let { announceNextExercise(it, indexToAnnounce) }
     }
 
     override fun onCleared() {
-        super.onCleared()
-        timerJob?.cancel()
-        stopAllAudio()
+        ticker?.cancel(); music.release(); tts.shutdown(); bell.release(); super.onCleared()
     }
 }

@@ -199,7 +199,7 @@ fun RecentHistoryList(sessions: List<WorkoutSession>, currentMonth: YearMonth) {
             verticalArrangement = Arrangement.spacedBy(8.dp),
             modifier = Modifier.weight(1f, fill = false)
         ) {
-            items(sessions.take(10)) { session ->
+            items(sessionsInMonth) { session ->
                 HistoryItem(session)
             }
         }
@@ -225,7 +225,7 @@ fun HistoryItem(session: WorkoutSession) {
         ) {
             Column {
                 Text(
-                    text = session.workoutName,
+                    text = session.workoutName + if (session.completed) "" else " · partielle",
                     style = MaterialTheme.typography.bodyLarge,
                     fontWeight = FontWeight.Bold
                 )
@@ -236,7 +236,7 @@ fun HistoryItem(session: WorkoutSession) {
                 )
             }
             Text(
-                text = "${session.durationInSeconds / 60} min",
+                text = com.example.a10minutesworkout.model.formatDuration(session.durationInSeconds),
                 style = MaterialTheme.typography.titleMedium,
                 color = MaterialTheme.colorScheme.primary,
                 fontWeight = FontWeight.Bold
