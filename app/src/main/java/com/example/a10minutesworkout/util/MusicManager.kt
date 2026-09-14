@@ -4,115 +4,65 @@ import android.content.Context
 import android.media.AudioAttributes
 import android.media.MediaPlayer
 import android.net.Uri
-import android.util.Log
+import android.os.Handler
+import android.os.Looper
 import com.example.a10minutesworkout.data.Track
+import com.example.a10minutesworkout.R
 
-class MusicManager(private val context: Context) {
-    private var mediaPlayer: MediaPlayer? = null
-    private var isMuted = false
-    private var playlist: List<Track> = emptyList()
-    private var currentIndex = 0
-    private var isShuffle = false
+class MusicManager(private val context: Context, private val onError: (String) -> Unit = {}) {
+    private var player: MediaPlayer? = null
+    private var playlist = emptyList<Track>()
+    private var index = 0
+    private var failures = 0
+    private var muted = false
+    private var shuffle = false
+    private var ready = false
+    private var wantsPlay = false
+    private val handler = Handler(Looper.getMainLooper())
 
     fun setPlaylist(tracks: List<Track>, shuffle: Boolean) {
-        this.playlist = tracks
-        this.isShuffle = shuffle
-        this.currentIndex = if (shuffle && tracks.isNotEmpty()) (tracks.indices).random() else 0
-        Log.d("MusicManager", "Playlist updated: ${tracks.size} tracks, shuffle=$shuffle")
+        stop()
+        playlist = tracks.ifEmpty { listOf(Track(title = "Musique intégrée", uriString = "android.resource://${context.packageName}/${R.raw.background_music}", orderIndex = 0)) }
+        this.shuffle = shuffle
+        index = if (shuffle) playlist.indices.random() else 0
+        failures = 0
     }
 
     fun play() {
-        if (mediaPlayer?.isPlaying == true) return
-        
-        if (mediaPlayer == null) {
-            startNextTrack()
-        } else {
-            mediaPlayer?.start()
-        }
+        wantsPlay = true
+        if (player == null) { failures = 0; load() } else if (ready) player?.start()
     }
 
-    private fun startNextTrack() {
-        mediaPlayer?.release()
-        mediaPlayer = null
-
-        if (playlist.isEmpty()) {
-            Log.w("MusicManager", "Playlist is empty, nothing to play")
-            return
-        }
-
-        val track = playlist.getOrNull(currentIndex) ?: return
-
+    private fun load() {
+        player?.release(); player = null; ready = false
+        if (playlist.isEmpty() || !wantsPlay) return
+        val candidate = MediaPlayer(); player = candidate
         try {
-            val uri = Uri.parse(track.uriString)
-            Log.d("MusicManager", "Attempting to play: ${track.title} (URI: ${track.uriString})")
-            
-            if (uri.scheme == "android.resource") {
-                val resId = uri.pathSegments.lastOrNull()?.toIntOrNull()
-                if (resId != null) {
-                    mediaPlayer = MediaPlayer.create(context, resId)
-                }
-            } else {
-                mediaPlayer = MediaPlayer().apply {
-                    setDataSource(context, uri)
-                    setAudioAttributes(
-                        AudioAttributes.Builder()
-                            .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
-                            .setUsage(AudioAttributes.USAGE_GAME)
-                            .build()
-                    )
-                    prepare()
-                }
+            candidate.setAudioAttributes(AudioAttributes.Builder().setContentType(AudioAttributes.CONTENT_TYPE_MUSIC).setUsage(AudioAttributes.USAGE_MEDIA).build())
+            candidate.setDataSource(context, Uri.parse(playlist[index].uriString))
+            candidate.setVolume(if (muted) 0f else 0.35f, if (muted) 0f else 0.35f)
+            candidate.setOnPreparedListener {
+                if (player === it) { ready = true; failures = 0; if (wantsPlay) it.start() }
             }
-
-            mediaPlayer?.apply {
-                val volume = if (isMuted) 0f else 1f
-                setVolume(volume, volume)
-                
-                setOnCompletionListener {
-                    if (isShuffle && playlist.size > 1) {
-                        currentIndex = (playlist.indices).random()
-                    } else {
-                        currentIndex = (currentIndex + 1) % playlist.size
-                    }
-                    startNextTrack()
-                }
-                
-                setOnErrorListener { _, _, _ ->
-                    currentIndex = (currentIndex + 1) % playlist.size
-                    startNextTrack()
-                    true
-                }
-                
-                start()
-            }
-        } catch (e: Exception) {
-            Log.e("MusicManager", "Error playing ${track.title}", e)
-            if (playlist.size > 1) {
-                currentIndex = (currentIndex + 1) % playlist.size
-                startNextTrack()
-            }
-        }
+            candidate.setOnCompletionListener { nextIndex(); load() }
+            candidate.setOnErrorListener { _, _, _ -> failed(); true }
+            candidate.prepareAsync()
+        } catch (e: Exception) { failed() }
     }
 
-    fun pause() {
-        mediaPlayer?.pause()
+    private fun failed() {
+        player?.release(); player = null; ready = false; failures++
+        if (failures >= playlist.size) { wantsPlay = false; onError("Musique indisponible. Continue sans musique ou choisis un autre fichier dans les paramètres."); return }
+        index = (index + 1) % playlist.size
+        handler.post { load() }
     }
 
-    fun stop() {
-        mediaPlayer?.stop()
-        mediaPlayer?.release()
-        mediaPlayer = null
+    private fun nextIndex() {
+        index = if (shuffle && playlist.size > 1) playlist.indices.filter { it != index }.random() else (index + 1) % playlist.size
     }
 
-    fun setMute(mute: Boolean) {
-        isMuted = mute
-        val volume = if (mute) 0f else 1f
-        mediaPlayer?.setVolume(volume, volume)
-    }
-
-    fun isMuted() = isMuted
-
-    fun release() {
-        stop()
-    }
+    fun pause() { wantsPlay = false; if (ready) player?.pause() }
+    fun stop() { wantsPlay = false; handler.removeCallbacksAndMessages(null); player?.release(); player = null; ready = false }
+    fun setMute(mute: Boolean) { muted = mute; player?.setVolume(if (mute) 0f else 0.35f, if (mute) 0f else 0.35f) }
+    fun release() = stop()
 }

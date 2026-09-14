@@ -64,39 +64,11 @@ fun SettingsScreen(viewModel: SettingsViewModel = viewModel()) {
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             item {
-                SettingsSection(title = "Configuration de la séance") {
-                    SettingSlider(
-                        title = "Temps d'effort",
-                        value = uiState.effortDuration,
-                        range = 20f..60f,
-                        steps = 7,
-                        unit = "s",
-                        icon = Icons.Default.Timer,
-                        onValueChange = { viewModel.updateEffortDuration(it.toInt()) }
-                    )
-
-                    SettingSlider(
-                        title = "Temps de repos",
-                        value = uiState.restDuration,
-                        range = 5f..30f,
-                        steps = 4,
-                        unit = "s",
-                        icon = Icons.Default.Bedtime,
-                        onValueChange = { viewModel.updateRestDuration(it.toInt()) }
-                    )
-
-                    SettingSlider(
-                        title = "Nombre de tours (Rounds)",
-                        value = uiState.numberOfRounds,
-                        range = 1f..5f,
-                        steps = 3,
-                        unit = "",
-                        icon = Icons.Default.Repeat,
-                        onValueChange = { viewModel.updateNumberOfRounds(it.toInt()) }
-                    )
+                SettingsSection(title = "Ton parcours personnel") {
+                    Text("Séances de 13 à 15 minutes. La difficulté suit ton ressenti ; les journées douces restent faciles. Choisis une charge qui permet des mouvements contrôlés.")
+                    Text("Sans playlist personnelle, la musique intégrée est utilisée. Tu peux couper la musique avant ou pendant la séance.")
                 }
             }
-
             item {
                 SettingsSection(title = "Options Audio") {
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -167,7 +139,7 @@ fun SettingsScreen(viewModel: SettingsViewModel = viewModel()) {
         AlertDialog(
             onDismissRequest = { showDeleteDialog = false },
             title = { Text("Confirmer la suppression") },
-            text = { Text("Voulez-vous vraiment supprimer tout l'historique ?") },
+            text = { Text("Supprimer toutes les séances et remettre la progression au début ?") },
             confirmButton = {
                 TextButton(
                     onClick = {

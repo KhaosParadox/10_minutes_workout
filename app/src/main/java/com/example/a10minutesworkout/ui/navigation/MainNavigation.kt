@@ -43,12 +43,13 @@ fun MainNavigation() {
     val entryProvider: (NavKey) -> NavEntry<NavKey> = { key ->
         when (key) {
             is Home -> NavEntry(key) {
-                HomeScreen(onStartWorkout = { backStack.add(Workout) })
+                HomeScreen(onStartWorkout = { gentle -> backStack.add(Workout(gentle)) })
             }
             is Workout -> NavEntry(key) {
                 val viewModel: WorkoutViewModel = viewModel()
                 WorkoutScreen(
                     viewModel = viewModel,
+                    gentle = key.gentle,
                     onBack = { backStack.removeLastOrNull() }
                 )
             }

@@ -94,7 +94,15 @@ class TTSManager(context: Context) : TextToSpeech.OnInitListener {
         }
     }
 
+    fun stop() {
+        tts?.stop()
+        abandonAudioFocus()
+    }
+
     fun shutdown() {
+        stop()
+        isInitialized = false
+        onReadyCallback = null
         tts?.stop()
         tts?.shutdown()
         tts = null
